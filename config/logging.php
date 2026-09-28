@@ -135,6 +135,12 @@ return [
             'path' => storage_path('logs/laravel.log'),
         ],
 
+        'data-prepper' => [
+            'driver' => 'custom',
+            'via' => App\Logging\CreateDataPrepperLogger::class,
+            'level' => env('LOG_LEVEL', 'debug'),
+        ],
+
     ],
 
 ];
