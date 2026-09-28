@@ -1,59 +1,153 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Laravel Log Pipeline (Data Prepper → OpenSearch)
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Ships structured Laravel logs asynchronously through OpenSearch Data Prepper into OpenSearch, with pipeline enrichment and a dedicated Horizon queue for delivery.
 
-## About Laravel
+## Requirements
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- PHP 8.3+ (project targets Laravel 13 / PHP 8.4-capable tooling)
+- Composer
+- Docker & Docker Compose
+- Redis PHP extension (`phpredis`) recommended
+- Node.js (optional, for Vite frontend assets)
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Quick start
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+### 1. Install the app
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Ensure `.env` includes:
 
-## Contributing
+```env
+QUEUE_CONNECTION=redis
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=Developer@123
+DATA_PREPPER_URL=http://127.0.0.1:2021/laravel/logs
+DATA_PREPPER_QUEUE_NAME=logs
+DATA_PREPPER_TIMEOUT=5
+```
 
-## Code of Conduct
+### 2. Start infrastructure
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```bash
+docker compose up -d
+```
 
-## Security Vulnerabilities
+| Service | URL |
+|---------|-----|
+| OpenSearch | https://localhost:9200 |
+| OpenSearch Dashboards | http://localhost:5601 |
+| Data Prepper HTTP ingest | http://localhost:2021/laravel/logs |
+| Data Prepper API | http://localhost:4900 |
+| Redis | localhost:6379 |
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+**Local credentials:** `admin` / `Developer@123` (from `.env`)
 
-## License
+### 3. Run Laravel + Horizon
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
-# dataprepp
+```bash
+php artisan serve
+php artisan horizon
+```
+
+Horizon dashboard: http://localhost:8000/horizon
+
+### 4. Emit a demo log
+
+```bash
+curl http://localhost:8000/demo/payment-failed
+```
+
+Or in application code:
+
+```php
+Log::channel('data-prepper')->error('Payment failed', [
+    'user_id' => 123,
+    'order_id' => 456,
+    'service' => 'payment-service',
+]);
+```
+
+### 5. Query OpenSearch
+
+```bash
+curl -sk -u admin:Developer@123 \
+  'https://localhost:9200/laravel-logs/_search?pretty&size=5'
+```
+
+Or open Dashboards → Discover and create an index pattern for `laravel-logs`.
+
+## Architecture details
+
+### Laravel logging channel
+
+- Channel: `data-prepper` (`config/logging.php`)
+- Factory: `App\Logging\CreateDataPrepperLogger`
+- Handler: `App\Logging\DataPrepperHandler` builds the payload and dispatches `SendLogToDataPrepper`
+
+### Async delivery job
+
+`App\Jobs\SendLogToDataPrepper`:
+
+- Always queued on the `logs` queue
+- Retries with backoff (`tries = 5`)
+- POSTs a **JSON array** of events (Data Prepper HTTP source contract)
+- On final failure, writes to the local `single` log channel
+
+Horizon runs a dedicated supervisor for `logs` so log shipping does not starve the `default` queue (`config/horizon.php`).
+
+### Data Prepper pipeline
+
+Configured in `data-prepper/pipelines.yaml`:
+
+1. **Source** — HTTP `POST /laravel/logs` on port `2021`
+2. **Processors** (in order):
+   - `add_entries` — `processed_by`, `pipeline`
+   - `rename_keys` — `datetime` → `@timestamp`
+   - `lowercase_string` — `level`, `environment`
+   - `uppercase_string` — `service`
+   - `delete_entries` — remove `channel`
+3. **Sink** — OpenSearch index `laravel-logs`
+
+After editing the pipeline:
+
+```bash
+docker compose up -d --force-recreate data-prepper
+```
+
+## Configuration reference
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `DATA_PREPPER_URL` | Prepper HTTP ingest endpoint | `http://127.0.0.1:2021/laravel/logs` |
+| `DATA_PREPPER_QUEUE_NAME` | Horizon/Redis queue for log jobs | `logs` |
+| `DATA_PREPPER_TIMEOUT` | HTTP timeout (seconds) for the job | `5` |
+| `OPENSEARCH_INITIAL_ADMIN_PASSWORD` | OpenSearch + Dashboards admin password | (see `.env.example`) |
+| `QUEUE_CONNECTION` | Must be `redis` for Horizon | `redis` |
+
+## Useful commands
+
+```bash
+# Stack
+docker compose up -d
+docker compose ps
+docker compose logs -f data-prepper
+docker compose down
+
+# App
+php artisan serve
+php artisan horizon
+php artisan test --compact
+
+# Manual ingest (bypass Laravel)
+curl -X POST 'http://127.0.0.1:2021/laravel/logs' \
+  -H 'Content-Type: application/json' \
+  -d '[{"level":"ERROR","message":"manual test","datetime":"2026-09-28T12:00:00+00:00","service":"api","environment":"local"}]'
+```
