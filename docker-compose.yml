@@ -69,10 +69,51 @@ services:
       - ./data-prepper/data-prepper-config.yaml:/usr/share/data-prepper/config/data-prepper-config.yaml:ro
     ports:
       - "2021:2021"
+      - "2022:2022"
       - "4900:4900"
     depends_on:
       opensearch:
         condition: service_healthy
+    networks:
+      - opensearch-net
+
+  log-demo:
+    image: busybox:1.36
+    container_name: log-demo
+    command:
+      - /bin/sh
+      - -c
+      - |
+        i=0
+        while true; do
+          i=$$((i+1))
+          echo "{\"message\":\"hello from container stdout\",\"service\":\"log-demo\",\"level\":\"info\",\"seq\":$$i}"
+          sleep 5
+        done
+    labels:
+      collect_logs: "true"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - opensearch-net
+
+  fluent-bit:
+    image: fluent/fluent-bit:3.1
+    container_name: fluent-bit
+    restart: unless-stopped
+    volumes:
+      - ./fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      data-prepper:
+        condition: service_started
+      log-demo:
+        condition: service_started
     networks:
       - opensearch-net
 

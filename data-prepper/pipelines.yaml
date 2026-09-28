@@ -31,3 +31,28 @@ laravel-pipeline:
         username: admin
         password: "Developer@123"
         index: laravel-logs
+
+container-pipeline:
+  workers: 2
+  delay: 100
+  source:
+    http:
+      port: 2022
+      path: "/container/logs"
+      ssl: false
+  processor:
+    - add_entries:
+        entries:
+          - key: "processed_by"
+            value: "data-prepper"
+          - key: "pipeline"
+            value: "container-pipeline"
+          - key: "collector"
+            value: "fluent-bit"
+  sink:
+    - opensearch:
+        hosts: ["https://opensearch:9200"]
+        insecure: true
+        username: admin
+        password: "Developer@123"
+        index: container-logs

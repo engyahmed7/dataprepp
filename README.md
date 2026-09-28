@@ -122,6 +122,33 @@ After editing the pipeline:
 docker compose up -d --force-recreate data-prepper
 ```
 
+### Container stdout → Fluent Bit → Data Prepper → OpenSearch
+
+```text
+log-demo (stdout)
+  → Docker json-file
+  → Fluent Bit (label filter collect_logs=true)
+  → Data Prepper HTTP :2022/container/logs
+  → OpenSearch index container-logs
+```
+
+| Piece | Role |
+|-------|------|
+| `log-demo` | Prints JSON to stdout every 5s |
+| `fluent-bit` | Tails Docker logs; HTTP output to Prepper only |
+| `container-pipeline` | Prepper HTTP source → enrich → OpenSearch sink |
+
+Fluent Bit filters demo lines with `grep` on `log-demo` (Fluent Bit 3.x has no `docker` filter for labels). Remove that filter to ship all container stdout.
+
+Query:
+
+```bash
+curl -sk -u admin:Developer@123 \
+  'https://localhost:9200/container-logs/_search?pretty&size=5'
+```
+
+Opt in other containers by adjusting the Fluent Bit `grep` filter in `fluent-bit/fluent-bit.conf` (or remove it to collect everything).
+
 ## Configuration reference
 
 | Variable | Purpose | Default |
