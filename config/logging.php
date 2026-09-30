@@ -135,10 +135,20 @@ return [
             'path' => storage_path('logs/laravel.log'),
         ],
 
-        'data-prepper' => [
-            'driver' => 'custom',
-            'via' => App\Logging\CreateDataPrepperLogger::class,
-            'level' => env('LOG_LEVEL', 'debug'),
+         'api-access' => [
+            'driver' => 'daily',
+
+            'path' => storage_path('logs/json/api-access.log'),
+
+            'level' => env('LOG_LEVEL', 'info'),
+
+            'days' => 14,
+
+            'replace_placeholders' => true,
+
+            'tap' => [
+                App\Logging\JsonTap::class,
+            ],
         ],
 
     ],

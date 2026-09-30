@@ -6,24 +6,6 @@ laravel-pipeline:
       port: 2021
       path: "/laravel/logs"
       ssl: false
-  processor:
-    - add_entries:
-        entries:
-          - key: "processed_by"
-            value: "data-prepper"
-          - key: "pipeline"
-            value: "laravel-pipeline"
-    - rename_keys:
-        entries:
-          - from_key: "datetime"
-            to_key: "@timestamp"
-            overwrite_if_to_key_exists: true
-    - lowercase_string:
-        with_keys: ["level", "environment"]
-    - uppercase_string:
-        with_keys: ["service"]
-    - delete_entries:
-        with_keys: ["channel"]
   sink:
     - opensearch:
         hosts: ["https://opensearch:9200"]
